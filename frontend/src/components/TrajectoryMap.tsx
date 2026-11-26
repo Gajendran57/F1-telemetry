@@ -1,11 +1,13 @@
 import { useMemo } from 'react';
-import type { CornerAnalysis, LapTelemetry } from '../types/telemetry';
+import type { CircuitOutline, CornerAnalysis, LapTelemetry } from '../types/telemetry';
 
 interface Props {
   reference: LapTelemetry;
   comparison: LapTelemetry;
   corners: CornerAnalysis[];
   colorBySpeed: boolean;
+  showBrakingZones?: boolean;
+  circuit?: CircuitOutline | null;
 }
 
 const VIEW = 1000;
@@ -29,13 +31,33 @@ function rampColor(t: number): string {
   return lerpColor(SPEED_RAMP[i], SPEED_RAMP[i + 1], scaled - i);
 }
 
-export function TrajectoryMap({ reference, comparison, corners, colorBySpeed }: Props) {
+const fmtKm = (metres: number) => `${(metres / 1000).toFixed(2)} km`;
+
+export function TrajectoryMap({
+  reference,
+  comparison,
+  corners,
+  colorBySpeed,
+  showBrakingZones = false,
+  circuit,
+}: Props) {
   const geometry = useMemo(() => {
-    const all = [...reference.samples, ...comparison.samples];
+    // The circuit is the reference frame. Laps and apexes only extend the
+    // bounds slightly, so the outline is never cropped and the GPS traces sit
+    // exactly on the selected circuit.
+    const points: Array<[number, number]> = [
+      ...(circuit?.points ?? []),
+      ...reference.samples.map((s) => [s.x, s.y] as [number, number]),
+      ...comparison.samples.map((s) => [s.x, s.y] as [number, number]),
+      ...corners.map((c) => [c.apexX, c.apexY] as [number, number]),
+    ].filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y));
+    if (!points.length) {
+      return { project: (x: number, y: number): [number, number] => [x, y], scale: 1 };
+    }
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const s of all) {
-      if (s.x < minX) minX = s.x; if (s.x > maxX) maxX = s.x;
-      if (s.y < minY) minY = s.y; if (s.y > maxY) maxY = s.y;
+    for (const [x, y] of points) {
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
     }
     const spanX = maxX - minX || 1;
     const spanY = maxY - minY || 1;
@@ -46,10 +68,18 @@ export function TrajectoryMap({ reference, comparison, corners, colorBySpeed }: 
       VIEW / 2 + (x - cx) * scale,
       VIEW / 2 - (y - cy) * scale,
     ];
-    return { project };
-  }, [reference, comparison]);
+    return { project, scale };
+  }, [circuit, reference, comparison, corners]);
 
-  const { project } = geometry;
+  const { project, scale } = geometry;
+
+  const circuitPath = useMemo(() => {
+    if (!circuit?.points.length) return '';
+    return circuit.points.map(([x, y], i) => {
+      const [px, py] = project(x, y);
+      return `${i === 0 ? 'M' : 'L'} ${px.toFixed(1)} ${py.toFixed(1)}`;
+    }).join(' ') + ' Z';
+  }, [circuit, project]);
 
   const pathFor = (lap: LapTelemetry) =>
     lap.samples.map((s, i) => {
@@ -58,15 +88,15 @@ export function TrajectoryMap({ reference, comparison, corners, colorBySpeed }: 
     }).join(' ');
 
   const speedBands = useMemo(() => {
-    if (!colorBySpeed) return [];
+    if (!colorBySpeed || reference.samples.length < 2) return [];
     const speeds = reference.samples.map((s) => s.speed);
     const minV = Math.min(...speeds);
     const maxV = Math.max(...speeds);
     const bins = 10;
     const paths: Array<{ d: string; color: string }> = [];
+    const samples = reference.samples;
     let current = '';
     let currentBin = -1;
-    const samples = reference.samples;
     for (let i = 0; i < samples.length - 1; i++) {
       const t = (samples[i].speed - minV) / (maxV - minV || 1);
       const bin = Math.min(bins - 1, Math.floor(t * bins));
@@ -84,17 +114,53 @@ export function TrajectoryMap({ reference, comparison, corners, colorBySpeed }: 
     return paths;
   }, [reference, project, colorBySpeed]);
 
+  const brakeZones = useMemo(() => {
+    if (!showBrakingZones) return [];
+    return corners
+      .filter((c) => c.brakePoint !== null && c.brakeRelease !== null)
+      .map((c) => {
+        let d = '';
+        for (const s of reference.samples) {
+          if (s.distance >= c.brakePoint! && s.distance <= c.brakeRelease!) {
+            const [px, py] = project(s.x, s.y);
+            d += d ? ` L ${px.toFixed(1)} ${py.toFixed(1)}`
+                   : `M ${px.toFixed(1)} ${py.toFixed(1)}`;
+          }
+        }
+        return d ? { corner: c.corner, d } : null;
+      })
+      .filter((x): x is { corner: number; d: string } => x !== null);
+  }, [corners, reference, project, showBrakingZones]);
+
+  const scaleBar = useMemo(() => {
+    const candidates = [1000, 500, 200, 100, 50];
+    const metres = candidates.find((m) => m * scale < 180) ?? 50;
+    return { metres, width: metres * scale };
+  }, [scale]);
+
   return (
     <div className="map-wrap">
-      <svg viewBox={`0 0 ${VIEW} ${VIEW}`} className="track-map">
+      <svg viewBox={`0 0 ${VIEW} ${VIEW}`} className="track-map"
+        role="img"
+        aria-label={circuit
+          ? `${circuit.name} circuit with ${reference.driver} lap ${reference.lapNumber} GPS trace`
+          : 'GPS trajectory'}>
         <defs>
           <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
             <feGaussianBlur stdDeviation="4" result="blur" />
             <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
           </filter>
         </defs>
-        <path d={pathFor(comparison)} fill="none" stroke="#2a2a3d" strokeWidth={12}
-          strokeLinejoin="round" strokeLinecap="round" />
+
+        {circuitPath && (
+          <>
+            <path d={circuitPath} fill="none" stroke="#2b2b40" strokeWidth={16}
+              strokeLinejoin="round" />
+            <path d={circuitPath} fill="none" stroke="#4a4a66" strokeWidth={2}
+              strokeDasharray="2 8" strokeLinejoin="round" />
+          </>
+        )}
+
         {colorBySpeed ? (
           speedBands.map((band, i) => (
             <path key={i} d={band.d} fill="none" stroke={band.color} strokeWidth={5}
@@ -106,6 +172,12 @@ export function TrajectoryMap({ reference, comparison, corners, colorBySpeed }: 
         )}
         <path d={pathFor(comparison)} fill="none" stroke="#ff8700" strokeWidth={2}
           strokeDasharray="7 6" strokeLinejoin="round" strokeLinecap="round" opacity={0.9} />
+
+        {brakeZones.map((zone) => (
+          <path key={`bz-${zone.corner}`} d={zone.d} fill="none" stroke="#ff3355"
+            strokeWidth={7} strokeLinecap="round" opacity={0.78} />
+        ))}
+
         {corners.map((c) => {
           const [px, py] = project(c.apexX, c.apexY);
           return (
@@ -115,15 +187,42 @@ export function TrajectoryMap({ reference, comparison, corners, colorBySpeed }: 
             </g>
           );
         })}
-        {(() => {
+        {reference.samples.length > 0 && (() => {
           const [px, py] = project(reference.samples[0].x, reference.samples[0].y);
           return <circle cx={px} cy={py} r={6} fill="#ffffff" />;
         })()}
+
+        <g className="map-scale" transform={`translate(${VIEW - PAD - scaleBar.width} ${VIEW - 30})`}>
+          <line x1={0} x2={scaleBar.width} y1={0} y2={0} stroke="#a3a3b8" strokeWidth={2} />
+          <line x1={0} x2={0} y1={-5} y2={5} stroke="#a3a3b8" strokeWidth={2} />
+          <line x1={scaleBar.width} x2={scaleBar.width} y1={-5} y2={5}
+            stroke="#a3a3b8" strokeWidth={2} />
+          <text x={scaleBar.width / 2} y={-10} textAnchor="middle" className="map-scale-label">
+            {scaleBar.metres >= 1000 ? `${scaleBar.metres / 1000} km` : `${scaleBar.metres} m`}
+          </text>
+        </g>
       </svg>
       <div className="map-legend">
+        {circuit && (
+          <span title={circuit.name}>
+            <i className="line-swatch" /> {circuit.name} · {fmtKm(circuit.length)}
+          </span>
+        )}
         <span><i className="dot teal" /> {reference.driver} L{reference.lapNumber}</span>
         <span><i className="dot orange" /> {comparison.driver} L{comparison.lapNumber}</span>
-        {colorBySpeed && <span className="map-legend-hint">Colour = speed (blue slow → red fast)</span>}
+        {showBrakingZones && (
+          <span><i className="dot red" /> Braking zone</span>
+        )}
+        {colorBySpeed && (
+          <span className="speed-legend-inline">
+            <span>Slow</span>
+            <span className="speed-gradient" />
+            <span>Fast</span>
+          </span>
+        )}
+        {circuit?.source === 'telemetry' && (
+          <span className="map-legend-hint">Circuit outline estimated from GPS</span>
+        )}
       </div>
     </div>
   );

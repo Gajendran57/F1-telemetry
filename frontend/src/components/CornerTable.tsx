@@ -13,12 +13,26 @@ export function CornerTable({ corners, deltas }: Props) {
       <table className="data-table">
         <thead>
           <tr>
-            <th>Corner</th><th>Apex dist.</th><th>Min speed</th><th>vs. other lap</th>
-            <th>Entry</th><th>Exit</th><th>Gear</th>
-            <th>Brake point</th><th>Release</th><th>Brake time</th>
+            <th>Corner</th>
+            <th title="Distance from the start/finish line">Apex dist.</th>
+            <th title="Slowest speed through the corner">Min speed</th>
+            <th title="Reference minus comparison apex speed">vs. other lap</th>
+            <th title="Speed at corner entry (km/h)">Entry</th>
+            <th title="Speed at corner exit (km/h)">Exit</th>
+            <th title="Gear at the apex">Gear</th>
+            <th title="Where braking starts">Brake point</th>
+            <th title="Where braking ends">Release</th>
+            <th title="Time spent braking">Brake time</th>
           </tr>
         </thead>
         <tbody>
+          {corners.length === 0 && (
+            <tr>
+              <td colSpan={10} className="table-empty">
+                No corners detected from this lap&apos;s GPS curvature. Try another reference lap.
+              </td>
+            </tr>
+          )}
           {corners.map((c) => {
             const d = deltaFor(c.corner);
             const deltaClass =

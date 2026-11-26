@@ -7,6 +7,9 @@ from f1_verifier.mock_source import build_session
 from f1_verifier.analysis import (
     analyse_corners, compare_corners, compute_delta_t, derive_curvature, verify,
 )
+from f1_verifier.data_source import clear_cache, load_laps
+from f1_verifier import data_source as ds
+from f1_verifier import config as cfg
 
 
 @pytest.fixture(scope="module")
@@ -93,3 +96,37 @@ def test_compare_corners_returns_entry_per_corner(session):
     assert len(deltas) == len(ref_corners)
     for d in deltas:
         assert d.corner > 0
+
+
+def test_load_laps_returns_source_and_caches(session, monkeypatch):
+    clear_cache()
+    monkeypatch.setattr(cfg.settings, "data_source", "fastf1")
+    monkeypatch.setattr(cfg.settings, "allow_mock_fallback", False)
+
+    calls = {"n": 0}
+
+    def fake_load_from_fastf1(**kwargs):
+        calls["n"] += 1
+        return session[:2], "fastf1"
+
+    monkeypatch.setattr("f1_verifier.fastf1_source.load_from_fastf1", fake_load_from_fastf1)
+    laps1, src1 = load_laps(force=True)
+    laps2, src2 = load_laps(force=False)
+    assert src1 == "fastf1"
+    assert src2 == "fastf1"
+    assert len(laps1) == 2
+    assert calls["n"] == 1
+
+
+def test_load_laps_no_mock_fallback_raises(monkeypatch):
+    clear_cache()
+    monkeypatch.setattr(cfg.settings, "data_source", "fastf1")
+    monkeypatch.setattr(cfg.settings, "allow_mock_fallback", False)
+
+    def boom(**kwargs):
+        raise RuntimeError("not ready")
+
+    monkeypatch.setattr("f1_verifier.fastf1_source.load_from_fastf1", boom)
+    with pytest.raises(RuntimeError):
+        load_laps(force=True)
+    clear_cache()

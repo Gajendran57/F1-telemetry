@@ -1,7 +1,14 @@
-"""Deterministic synthetic circuit — mirrors frontend/src/lib/track.ts and telemetry.ts."""
+"""Deterministic laps generated on the centre-line of the selected circuit.
+
+Mirrors frontend/src/lib/track.ts and telemetry.ts. When a Grand Prix is
+supplied, the raw geometry comes from the shared circuit outline dataset so
+that changing the selection changes the circuit drawn by the GPS map.
+"""
 from __future__ import annotations
 import math
 from dataclasses import dataclass
+
+from f1_verifier.circuits import circum_curvature, find_circuit, resample_closed
 from f1_verifier.schemas import Compound, LapTelemetry, TelemetrySample
 
 
@@ -13,17 +20,8 @@ class TrackPoint:
     curvature: float = 0.0
 
 
-def _circum_curvature(ax, ay, bx, by, cx, cy) -> float:
-    ab = math.hypot(bx - ax, by - ay)
-    bc = math.hypot(cx - bx, cy - by)
-    ca = math.hypot(cx - ax, cy - ay)
-    area2 = abs((bx - ax) * (cy - ay) - (by - ay) * (cx - ax))
-    if area2 < 1e-9 or ab < 1e-6 or bc < 1e-6 or ca < 1e-6:
-        return 0.0
-    return 1.0 / ((ab * bc * ca) / (2.0 * area2))
-
-
-def build_track(ds: float = 5.0) -> list[TrackPoint]:
+def _synthetic_raw() -> list[tuple[float, float]]:
+    """Fallback shape for unknown Grand Prix names (kept from the original)."""
     n_raw = 6000
     raw: list[tuple[float, float]] = []
     for i in range(n_raw):
@@ -35,39 +33,32 @@ def build_track(ds: float = 5.0) -> list[TrackPoint]:
             + 0.12 * math.sin(8 * theta + 2.4)
         )
         raw.append((r * math.cos(theta), r * math.sin(theta)))
+    return raw
 
-    cum = [0.0] * n_raw
-    for i in range(1, n_raw):
-        cum[i] = cum[i - 1] + math.hypot(raw[i][0] - raw[i - 1][0], raw[i][1] - raw[i - 1][1])
-    total = cum[-1]
 
-    count = int(total / ds)
+def build_track(ds: float = 5.0, gp: str | None = None) -> list[TrackPoint]:
+    circuit = find_circuit(gp)
+    raw = circuit.points if circuit else _synthetic_raw()
+    coords = resample_closed(raw, ds)
+    if not coords:
+        return []
+
+    n = len(coords)
     points: list[TrackPoint] = []
-    cursor = 0
-    for i in range(count):
-        target = i * ds
-        while cursor < n_raw - 2 and cum[cursor + 1] < target:
-            cursor += 1
-        seg = cum[cursor + 1] - cum[cursor] or 1.0
-        t = (target - cum[cursor]) / seg
+    for i, (x, y) in enumerate(coords):
+        prev = coords[(i - 3) % n]
+        nxt = coords[(i + 3) % n]
         points.append(TrackPoint(
-            x=raw[cursor][0] + (raw[cursor + 1][0] - raw[cursor][0]) * t,
-            y=raw[cursor][1] + (raw[cursor + 1][1] - raw[cursor][1]) * t,
-            distance=target,
+            x=x,
+            y=y,
+            distance=i * ds,
+            curvature=circum_curvature(prev, (x, y), nxt),
         ))
-
-    n = len(points)
-    raw_curv = [0.0] * n
-    for i in range(n):
-        a = points[(i - 3) % n]
-        b = points[i]
-        c = points[(i + 3) % n]
-        raw_curv[i] = _circum_curvature(a.x, a.y, b.x, b.y, c.x, c.y)
 
     half = 4
     for i in range(n):
-        s = sum(raw_curv[(i + k) % n] for k in range(-half, half + 1))
-        points[i].curvature = s / (2 * half + 1)
+        raw_curv = sum(points[(i + k) % n].curvature for k in range(-half, half + 1))
+        points[i].curvature = raw_curv / (2 * half + 1)
 
     return points
 
@@ -177,8 +168,13 @@ def generate_lap(
     )
 
 
-def build_session() -> list[LapTelemetry]:
-    track = build_track(5.0)
+def build_session(
+    drivers: list[str] | None = None,
+    lap_selection: dict[str, list[int]] | None = None,
+    gp: str | None = None,
+) -> list[LapTelemetry]:
+    """Synthetic laps on the selected Grand Prix's circuit centre-line."""
+    track = build_track(5.0, gp=gp)
     configs = [
         dict(driver="VER", lap_number=32, compound="SOFT",
              a_lat_scale=1.0,   brake_scale=1.0,  line_phase=0.0, line_amp=3.0, wobble=0.0),
@@ -189,4 +185,16 @@ def build_session() -> list[LapTelemetry]:
         dict(driver="NOR", lap_number=35, compound="MEDIUM",
              a_lat_scale=0.995, brake_scale=0.99, line_phase=2.7, line_amp=3.1, wobble=3.4),
     ]
-    return [generate_lap(track, **cfg) for cfg in configs]
+    if not drivers:
+        return [generate_lap(track, **cfg) for cfg in configs]
+
+    laps: list[LapTelemetry] = []
+    for i, raw_driver in enumerate(drivers):
+        driver = raw_driver.strip().upper()
+        if not driver:
+            continue
+        numbers = (lap_selection or {}).get(driver) or [32 + 2 * i, 33 + 2 * i]
+        for j, lap_number in enumerate(numbers):
+            cfg = configs[(i + j) % len(configs)]
+            laps.append(generate_lap(track, **{**cfg, "driver": driver, "lap_number": lap_number}))
+    return laps or [generate_lap(track, **cfg) for cfg in configs]

@@ -5,6 +5,7 @@
  */
 
 export type Compound = 'SOFT' | 'MEDIUM' | 'HARD' | 'INTERMEDIATE' | 'WET';
+export type DataSource = 'fastf1' | 'live' | 'mock' | 'synthetic';
 
 /** One row of a FastF1 `lap.get_telemetry()` DataFrame. */
 export interface TelemetrySample {
@@ -26,6 +27,16 @@ export interface LapTelemetry {
   lapTime: number;    // s
   compound: Compound;
   samples: TelemetrySample[];
+}
+
+/** Circuit centre-line in local east/north metres, drawn behind the GPS laps. */
+export interface CircuitOutline {
+  id?: string | null;
+  name: string;
+  country?: string | null;
+  length: number;     // m
+  points: Array<[number, number]>;
+  source: 'circuit-data' | 'telemetry';
 }
 
 export interface DeltaTPoint {
@@ -73,4 +84,34 @@ export interface CornerDelta {
   cmpMinSpeed: number;
   minSpeedDelta: number;
   apexDistanceDelta: number;
+}
+
+/** Optional overrides for the values normally read from backend/.env. */
+export interface SessionSelection {
+  source?: 'mock' | 'fastf1';
+  year?: number;
+  gp?: string;
+  session?: string;
+  drivers?: string[];
+  cacheDir?: string;
+  liveFile?: string | null;
+  laps?: string | null;
+  allowMockFallback?: boolean;
+}
+
+export interface OptionItem {
+  value: string;
+  label: string;
+  detail?: string | null;
+}
+
+export interface OptionsResponse {
+  year: number;
+  years: number[];
+  events: OptionItem[];
+  sessions: OptionItem[];
+  drivers: OptionItem[];
+  defaults: SessionSelection;
+  fastf1Available: boolean;
+  corsOrigins: string[];
 }

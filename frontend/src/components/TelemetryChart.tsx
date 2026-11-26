@@ -98,21 +98,26 @@ export function TelemetryChart({
   const xTicks = niceTicks(domain.xMin, domain.xMax, 6);
   const yTicks = niceTicks(domain.yMin, domain.yMax, 5);
 
+  const hasData = series.some((s) => s.points.length > 0);
+
   const hovered = useMemo(() => {
-    if (hoverX === null || series.length === 0) return null;
+    if (hoverX === null || !hasData) return null;
     const px = hoverX - PAD.left;
     const dataX = domain.xMin + (px / innerW) * (domain.xMax - domain.xMin);
-    const rows = series.map((s) => {
-      const idx = nearestIndex(s.points, dataX);
-      return { label: s.label, color: s.color, value: s.points[idx][1] };
-    });
+    const rows = series
+      .filter((s) => s.points.length > 0)
+      .map((s) => {
+        const idx = nearestIndex(s.points, dataX);
+        return { label: s.label, color: s.color, value: s.points[idx][1] };
+      });
     return { dataX, rows };
-  }, [hoverX, series, domain, innerW]);
+  }, [hoverX, series, domain, innerW, hasData]);
 
   return (
     <div className="chart" ref={ref} style={{ position: 'relative' }}>
-      <svg width={width} height={height} onMouseLeave={() => setHoverX(null)}
-        onMouseMove={(e) => {
+      <svg width={width} height={height}
+        onPointerLeave={() => setHoverX(null)}
+        onPointerMove={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
           setHoverX(e.clientX - rect.left);
         }}>
@@ -151,9 +156,12 @@ export function TelemetryChart({
           transform={`rotate(-90 14 ${PAD.top + innerH / 2})`}
           className="chart-axis-label">{yLabel}</text>
       </svg>
+      {!hasData && (
+        <div className="chart-empty">No telemetry samples available for this comparison.</div>
+      )}
       {hoverX !== null && hovered && hoverX >= PAD.left && hoverX <= PAD.left + innerW && (
         <div className="chart-tooltip"
-          style={{ left: Math.min(hoverX + 14, width - 170), top: 6 }}>
+          style={{ left: Math.max(8, Math.min(hoverX + 14, width - 200)), top: 6 }}>
           <div className="tooltip-x">{Math.round(hovered.dataX)} m</div>
           {hovered.rows.map((r) => (
             <div className="tooltip-row" key={r.label}>

@@ -1,6 +1,8 @@
 """Loads real telemetry via FastF1 (used when USE_FASTF1=true)."""
 from __future__ import annotations
 import math
+import os
+
 from f1_verifier.schemas import Compound, LapTelemetry, TelemetrySample
 
 _VALID_COMPOUNDS = {"SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET"}
@@ -13,21 +15,51 @@ def load_from_fastf1(
     session: str,
     drivers: list[str],
     cache_dir: str,
-) -> list[LapTelemetry]:
+    live_file: str | None = None,
+    lap_selection: dict[str, list[int]] | None = None,
+) -> tuple[list[LapTelemetry], str]:
     import fastf1  # lazy import so the mock path has zero heavy deps
 
     fastf1.Cache.enable_cache(cache_dir)
     sess = fastf1.get_session(year, gp, session)
-    sess.load(telemetry=True, laps=True, weather=False, messages=False)
+
+    source = "fastf1"
+    if live_file and os.path.exists(live_file):
+        from fastf1.livetiming.data import LiveTimingData
+
+        sess.load(
+            livedata=LiveTimingData(live_file),
+            telemetry=True,
+            weather=False,
+            messages=False,
+        )
+        source = "live"
+    else:
+        sess.load(telemetry=True, laps=True, weather=False, messages=False)
 
     out: list[LapTelemetry] = []
     for drv in drivers:
-        driver_laps = sess.laps.pick_driver(drv)
+        driver_laps = sess.laps.pick_drivers(drv)
         if driver_laps.empty:
             continue
-        for _, lap in driver_laps.head(2).iterrows():
-            if lap.get("IsAccurate") is False:
-                continue
+
+        wanted = (lap_selection or {}).get(drv)
+        if wanted:
+            selected = driver_laps[driver_laps["LapNumber"].isin(wanted)]
+            # Preserve requested order where possible.
+            ordered = []
+            for n in wanted:
+                match = selected[selected["LapNumber"] == n]
+                if not match.empty:
+                    ordered.append(match.iloc[0])
+            rows = ordered
+        else:
+            accurate = driver_laps
+            if "IsAccurate" in driver_laps.columns:
+                accurate = driver_laps[driver_laps["IsAccurate"] != False]  # noqa: E712
+            rows = [row for _, row in accurate.head(2).iterrows()]
+
+        for lap in rows:
             try:
                 tel = lap.get_telemetry()
             except Exception as e:
@@ -42,20 +74,29 @@ def load_from_fastf1(
             if lap_time is None or (
                 hasattr(lap_time, "total_seconds") and math.isnan(lap_time.total_seconds())
             ):
-                continue
+                # For live/partial laps, estimate from telemetry time span.
+                if samples and samples[-1].time > 0:
+                    lap_time_s = float(samples[-1].time)
+                else:
+                    continue
+            else:
+                lap_time_s = float(
+                    lap_time.total_seconds() if hasattr(lap_time, "total_seconds") else lap_time
+                )
+
             compound = str(lap.get("Compound") or "SOFT").upper()
             if compound not in _VALID_COMPOUNDS:
                 compound = "SOFT"
-            out.append(LapTelemetry(
-                driver=drv,
-                lapNumber=int(lap.get("LapNumber", 0)),
-                lapTime=float(
-                    lap_time.total_seconds() if hasattr(lap_time, "total_seconds") else lap_time
-                ),
-                compound=compound,  # type: ignore[arg-type]
-                samples=samples,
-            ))
-    return out
+            out.append(
+                LapTelemetry(
+                    driver=drv,
+                    lapNumber=int(lap.get("LapNumber", 0)),
+                    lapTime=lap_time_s,
+                    compound=compound,  # type: ignore[arg-type]
+                    samples=samples,
+                )
+            )
+    return out, source
 
 
 def _df_to_samples(df) -> list[TelemetrySample]:

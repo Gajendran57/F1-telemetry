@@ -1,3 +1,29 @@
+# F1 Telemetry — Frontend
+
+The **Session setup** panel selects telemetry source, season, Grand Prix,
+session, drivers and the other values defined in `backend/.env` (laps, cache
+directory, live timing file and mock fallback). Defaults are fetched from
+`GET /api/v1/options`; pressing **Apply & reload** passes the selection to
+`GET /api/v1/laps`. CORS origins are server-side and shown read-only.
+
+If `VITE_API_BASE_URL` is empty or the backend is unreachable, the same
+selectors drive the built-in synthetic telemetry generator. In mock mode the
+generator builds laps on the real centre-line of the selected Grand Prix, so
+the **GPS map** tab draws the GPS traces directly on that circuit. Circuit
+outlines are shared with the backend via `shared/circuits.json` (see
+`shared/README.md` for attribution).
+
+Use the tab bar to switch views, or press ←/→ (Home/End) while a tab is
+focused. The active tab is stored in the URL hash, e.g. `#trajectory`, so views
+can be bookmarked and survive a reload.
+
+```bash
+npm install
+npm run dev     # http://localhost:5173
+```
+
+---
+
 # React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
